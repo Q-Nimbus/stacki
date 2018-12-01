@@ -23,6 +23,7 @@ class SwitchMellanoxM7800(Switch):
 	"""
 	Class for interfacing with a Mellanox 7800 Infiniband Switch.
 	"""
+	SUPPORTED_IMAGE_FETCH_PROTOCOLS = ['http', 'https', 'ftp', 'tftp', 'scp', 'sftp']
 
 	def supported(*cls):
 		return [
@@ -332,8 +333,16 @@ class SwitchMellanoxM7800(Switch):
 
 
 	def image_fetch(self, url):
-		self.proc.ask(f'image fetch {url}', timeout=900)
+		# validate the fetch url protocol is one we support
+		if not any((url.startswith(protocol) for protocol in self.SUPPORTED_IMAGE_FETCH_PROTOCOLS)):
+			raise SwitchException(f'Image fetch URL must be one of the following supported protocols {self.SUPPORTED_IMAGE_FETCH_PROTOCOLS}')
 
+		results = self.proc.ask(f'image fetch {url}', timeout=900)
+		# check for success indicators and raise an error if not found.
+		if not any(('100.0%' in result for result in results)):
+			# error messages appear to start with a % character
+			error = next((error_string for error_string in results if error_string.startswith('%')), ['unknown error'])
+			raise SwitchException(f'Image fetch failed with error {error}')
 
 	def show_images(self):
 		images_text = self.proc.ask('show images')

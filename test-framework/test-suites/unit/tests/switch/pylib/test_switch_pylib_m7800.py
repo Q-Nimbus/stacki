@@ -5,6 +5,7 @@ from unittest.mock import ANY
 import json
 
 from stack.switch.m7800 import SwitchMellanoxM7800
+from stack.switch import SwitchException
 
 INPUT_DATA = [
 	['m7800_parse_partitions_input.txt', 'm7800_parse_partitions_output.json'],
@@ -56,15 +57,54 @@ class TestSwitchMellanoxM7800:
 		test_switch.image_delete(image = firmware_name)
 		mock_expectmore.return_value.say.assert_called_with(f'image delete {firmware_name}')
 
-	def test_image_fetch(self, mock_expectmore):
+	@pytest.mark.parametrize('protocol', SwitchMellanoxM7800.SUPPORTED_IMAGE_FETCH_PROTOCOLS)
+	def test_image_fetch(self, mock_expectmore, protocol):
 		"""Expect this to try to fetch the user requested firmware."""
 		test_switch = SwitchMellanoxM7800('fakeip')
-		firmware_url = 'http://sometrustworthysite.ru'
+		firmware_url = f'{protocol}://sometrustworthysite.ru'
+		# add success condition return value
+		mock_expectmore.return_value.ask.return_value = ['100.0%']
 		test_switch.image_fetch(url = firmware_url)
 		mock_expectmore.return_value.ask.assert_called_with(
 			f'image fetch {firmware_url}',
 			timeout=ANY
 		)
+
+	def test_image_fetch_bad_protocol(self, mock_expectmore):
+		"""Expect an error to be raised on an unsupported protocol."""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_url = 'git://user@sometrusworthysite.ru/sometrustworthyrepo.git'
+		# add success condition return value to ensure the exception is because of the
+		# unsupported protocol.
+		mock_expectmore.return_value.ask.return_value = ['100.0%']
+
+		with pytest.raises(SwitchException):
+			test_switch.image_fetch(url = firmware_url)
+
+	def test_image_fetch_error_with_message(self, mock_expectmore):
+		"""Expect an error to be raised due to a missing success indicator and the error message to be captured."""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_url = f'{test_switch.SUPPORTED_IMAGE_FETCH_PROTOCOLS[0]}://sometrustworthysite.ru'
+
+		error_message = '% unauthorized'
+		mock_expectmore.return_value.ask.return_value = ['other junk', error_message,]
+		with pytest.raises(SwitchException) as exception:
+			test_switch.image_fetch(url = firmware_url)
+		assert(error_message in str(exception))
+
+	def test_image_fetch_error_without_message(self, mock_expectmore):
+		"""Expect an error to be raised due to a missing success indicator.
+
+		The error message is not captured because it is missing the beggining % symbol.
+		"""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_url = f'{test_switch.SUPPORTED_IMAGE_FETCH_PROTOCOLS[0]}://sometrustworthysite.ru'
+
+		irrelevant_output = ['other junk', 'irrelevant',]
+		mock_expectmore.return_value.ask.return_value = irrelevant_output
+		with pytest.raises(SwitchException) as exception:
+			test_switch.image_fetch(url = firmware_url)
+		assert(not any((output in str(exception) for output in irrelevant_output)))
 
 	def test_show_images(self, mock_expectmore):
 		"""Expect this to try to list the current and available firmware images."""
