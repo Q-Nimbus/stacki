@@ -1,5 +1,6 @@
 #!/opt/stack/bin/python3 -E
 import os
+import subprocess
 import time
 
 class BackendTest:
@@ -12,17 +13,43 @@ class BackendTest:
 	def isEmptyFile(self, filepath):
 		return os.stat(filepath).st_size == 0
 
+	def output_state(self, state, flag):
+		test_env = os.environ.copy()
+		test_env["LD_LIBRARY_PATH"] = "/opt/stack/lib:" + test_env["LD_LIBRARY_PATH"]
+		cmd = ['/opt/stack/bin/smq-publish', '-chealth', '-t300', \
+			'{"systest":"%s","flag":"%s"}' % (state, str(flag))]
+		subprocess.run(cmd, env=test_env)
+
 	def check_autoyast_files(self):
 		file_list = ['/tmp/profile/autoinst.xml', '/tmp/stack_site/__init__.py']
 		#
 		# Once SSH is available, the autoyast, stacki chapets should have
 		# already been created
 		#
-		for f in file_list:
-			if self.isEmptyFile(f):
-				print('Backend - %s profile file - Empty' % f)
-			else:
-				print('Backend - %s - Present' % f)
+		'''
+		DHCPDISCOVER = 1
+        DHCPOFFER = 2
+        DHCPREQUEST = 3
+        DHCPACK = 4
+        TFTP_RRQ = 5
+        VMLinuz_RRQ = 6
+        Initrd_RRQ = 7
+        Autoyast_Sent = 8
+        SSH_Open = 9
+        AUTOINST_Present = 10
+        Ludicrous_Started = 11
+        Ludicrous_Populated = 12
+        Bootaction_OS = 13
+        Reboot_Okay = 14
+		'''
+		#for f in file_list:
+		f = file_list[0]
+		if self.isEmptyFile(f):
+			self.output_state("AUTOINST_Present", False)
+			print('Backend - %s profile file - Empty' % f)
+		else:
+			self.output_state("AUTOINST_Present", True)
+			print('Backend - %s - Present' % f)
 
 	def check_file_exists(self, path):
 		i = 0

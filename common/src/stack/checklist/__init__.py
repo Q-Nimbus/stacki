@@ -1,73 +1,145 @@
-import os
-import stack.api
+import logging
+import queue
+import socket
+from stack.checklist import Backend, State, StateMessage
+from stack.checklist.threads import MQProcessor, LogParser, BackendExec
 import stack.commands
 from stack.exception import ArgRequired, ArgUnique, CommandError
 import sys
 import time
+import zmq
 
-dhcp_start = 0
+time_dict={}
 
-def timeit(method):
+def measureTime(msg, limit):
 
-	def timed(*args, **kwargs):
-		global dhcp_start
-		method(*args, **kwargs)
-		end = time.time()
+	def timeit(method):
 
-		if dhcp_start == 0:
-			return
+		def timed(*args, **kwargs):
+			start = time.time()
+			method(*args, **kwargs)
+			end = time.time()
 
-		elapsed = end - dhcp_start
-		method_name = method.__name__
-		
-		if elapsed > BackendSystemTest.time_arr[method_name]:
-			print('!!! %s - Timed out !!!' % method_name)
+			elapsed = end - start
+			method_name = method.__name__
+			global time_dict
 
-	return timed
-
-class Command(stack.commands.Command):
+			if method_name in time_dict:
+				time_dict[method_name] = time_dict[method_name] + elapsed
+			else:
+				time_dict[method_name] = elapsed
 	
-	# Time in seconds for each stage
-	time_arr    = {'process_dhcp' : 60, 'process_tftp' : 120}
+			if time_dict[method_name] > limit:
+				print('!!! %s !!!' % msg)
+		return timed
 
-	def run(self, params, args):
-		self.dictObj = {}
+	return timeit
 
-		if len(args) == 1:
-			self.dictObj['hostname'] = args[0]
-		else:
+class Command(stack.commands.Command, stack.commands.HostArgumentProcessor):
+	
+	def dumpObj(self):
+		print('#####################')
+		print('ip addr = %s' % ','.join(self.dictObj['ip']))
+		print('mac = %s' % ','.join(self.dictObj['mac']))
+		print('#####################')
+
+	def enrichBackends(self, args):
+		hnameBackendMap = {}
+
+		hosts = self.getHostnames(args)
+
+		if len(args) == 0:
 			raise ArgRequired(self, 'hostname')
 
-		op = stack.api.Call('list.host', args)
-		if len(op) == 0:
-			raise CommandError(self, 'invalid hostname')
-		elif len(op) > 1:
-			raise ArgUnique(self, 'host')
+		op = self.call('list.host', args)
+		if not op:
+			raise ArgRequired(self, 'host')
 
-		bootaction = op[0]['installaction']
+		backendList = []
+	
+		for o in op:
+			b = Backend(o['host'], o['installaction'])
+			hnameBackendMap[o['host']] = b
+			backendList.append(b)
 
-		op = stack.api.Call('list.network', ['pxe=True'])
+		op = self.call('list.network', ['pxe=True'])
 		pxe_network_list = []
 		for o in op:
 			pxe_network_list.append(o['network'])
 
+		self.ipBackendMap = {}
 		ip_list  = []
 		mac_list = []
-		op = stack.api.Call('list.host.interface', args)
+		op = self.call('list.host.interface', args)
 		for o in op:
-			# Check with Anoop
+			hostname = o['host']
+
 			if o['network'] in pxe_network_list:
-				ip_list.append(o['ip'])
-				mac_list.append(o['mac'])
+				b = hnameBackendMap[hostname]
+				b.addIpAndMac(o['ip'], o['mac'])
+				if o['ip']:
+					self.ipBackendMap[o['ip']] = b
 
-		self.dictObj['ip']  = ip_list
-		self.dictObj['mac'] = mac_list
+		op = self.call('list.host.boot', args)
+		for o in op:
+			hostname = o['host']
+			action = o['action']
+			b = hnameBackendMap[hostname]
+			b.action = o['action']
 
-		op = stack.api.Call('list.host.boot', args)
-		atype = op[0]['action']
+		# Build a bootaction dictionary for ease of access
+		bootactionMap = {}
+		op = self.call('list.bootaction', \
+			['bootaction=%s' % b.installaction, 'type=%s' % b.action])
+		for o in op:
+			key = o['bootaction'] + '-' + o['type']
+			bootactionMap[key] = o
 
-		op = stack.api.Call('list.bootaction', ['bootaction=%s' % bootaction, 'type=%s' % atype])
-		self.dictObj['kernel']  = op[0]['kernel']
-		self.dictObj['ramdisk'] = op[0]['ramdisk']
+		for b in backendList:
+			key = b.installaction + '-' + b.action
+			o = bootactionMap[key]
+			b.kernel  = o['kernel']
+			b.ramdisk = o['ramdisk']
 
-		self.runPlugins(self.dictObj)
+	def processQueueMsgs(self):
+		while True:
+			sm = self.queue.get()
+			stateList = self.ipBackendMap[sm.ipAddr].stateArr
+			stateList.append(sm)
+
+			# Lazy init backend Exec thread
+			if sm.state == State.DHCPACK and not sm.isError \
+				and sm.ipAddr not in self.ipThreadMap:
+				backendThread = BackendExec(sm.ipAddr, self.queue)
+				self.ipThreadMap[sm.ipAddr] = backendThread
+				backendThread.start()
+
+			print('\n #### STATE LIST BEGINS - HOST %s ####' % sm.ipAddr)
+			for s in stateList:
+				print('%s State = %s, isError = %s' % \
+					(s.convertTimestamp(), s.state, s.isError))
+			print('#### STATE LIST ENDS - HOST %s ####' % sm.ipAddr)
+			sys.stdout.flush()
+	
+	def run(self, params, args):
+		self.ipBackendMap = {}
+		self.enrichBackends(args)
+
+		self.queue = queue.Queue()
+		dhcpLog = LogParser("/var/log/messages", self.ipBackendMap, self.queue)
+		dhcpLog.setDaemon(True)
+		dhcpLog.start()
+
+		apacheLog = LogParser("/var/log/apache2/ssl_access_log", self.ipBackendMap, self.queue)
+		apacheLog.setDaemon(True)
+		apacheLog.start()
+
+		context = zmq.Context()
+		tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		mqSubscriber = MQProcessor(context, tx, self.ipBackendMap.keys(), self.queue)
+		
+		mqSubscriber.setDaemon(True)
+		mqSubscriber.start()
+
+		self.ipThreadMap = {}
+		self.processQueueMsgs()	
