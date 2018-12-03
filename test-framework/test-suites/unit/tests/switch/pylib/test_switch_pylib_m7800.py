@@ -55,7 +55,18 @@ class TestSwitchMellanoxM7800:
 		test_switch = SwitchMellanoxM7800('fakeip')
 		firmware_name = 'my_amazing_firmware'
 		test_switch.image_delete(image = firmware_name)
-		mock_expectmore.return_value.say.assert_called_with(f'image delete {firmware_name}')
+		mock_expectmore.return_value.ask.assert_called_with(f'image delete {firmware_name}')
+
+	def test_image_delete_error(self, mock_expectmore):
+		"""Expect this to raise an error if there is an error response."""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_name = 'my_amazing_firmware'
+		error_message = '% file not found'
+		mock_expectmore.return_value.ask.return_value = [error_message]
+
+		with pytest.raises(SwitchException) as exception:
+			test_switch.image_delete(image = firmware_name)
+		assert(error_message in str(exception))
 
 	@pytest.mark.parametrize('protocol', SwitchMellanoxM7800.SUPPORTED_IMAGE_FETCH_PROTOCOLS)
 	def test_image_fetch(self, mock_expectmore, protocol):
@@ -149,3 +160,10 @@ class TestSwitchMellanoxM7800:
 		mock_expectmore.return_value.ask.return_value = test_console_response
 		test_switch = SwitchMellanoxM7800('fakeip')
 		assert(test_switch.show_images() == expected_data)
+
+	def test__get_errors(self, mock_expectmore):
+		"""Confirm that strings starting with '%' are treated as errors."""
+		command_response = ['foobar%%%%%%', 'f%o%b%a%r%', '%foobar%', '%errors!']
+		test_switch = SwitchMellanoxM7800('fakeip')
+		expected = sorted(['%foobar%', '%errors!'])
+		assert(sorted(test_switch._get_errors(command_response)) == expected)

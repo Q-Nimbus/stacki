@@ -329,7 +329,10 @@ class SwitchMellanoxM7800(Switch):
 
 
 	def image_delete(self, image):
-		self.proc.say(f'image delete {image}')
+		results = self.proc.ask(f'image delete {image}')
+		errors = self._get_errors(results)
+		if any(errors):
+			raise SwitchException(f'Image delete failed with error {errors}')
 
 
 	def image_fetch(self, url):
@@ -340,9 +343,9 @@ class SwitchMellanoxM7800(Switch):
 		results = self.proc.ask(f'image fetch {url}', timeout=900)
 		# check for success indicators and raise an error if not found.
 		if not any(('100.0%' in result for result in results)):
-			# error messages appear to start with a % character
-			error = next((error_string for error_string in results if error_string.startswith('%')), ['unknown error'])
-			raise SwitchException(f'Image fetch failed with error {error}')
+			errors = self._get_errors(results)
+			errors = errors if errors else 'unknown error'
+			raise SwitchException(f'Image fetch failed with error {errors}')
 
 	def show_images(self):
 		images_text = self.proc.ask('show images')
@@ -394,3 +397,8 @@ class SwitchMellanoxM7800(Switch):
 			i = i + 1
 		return data
 
+	def _get_errors(self, command_response):
+		"""Looks for lines that start with a '%' character and returns a list of them.
+		Error messages appear to start with a % character.
+		"""
+		return [error_string for error_string in command_response if error_string.startswith('%')]
