@@ -44,11 +44,28 @@ class TestSwitchMellanoxM7800:
 		"""Expect this to try to install the user requested firmware."""
 		test_switch = SwitchMellanoxM7800('fakeip')
 		firmware_name = 'my_amazing_firmware'
+		mock_expectmore.return_value.ask.return_value = ['Step 1 of 4: Verify Image', '100.0%', '100.0%', '100.0%', '100.0%',]
 		test_switch.install_firmware(image = firmware_name)
 		mock_expectmore.return_value.ask.assert_called_with(
 			f'image install {firmware_name}',
 			timeout=ANY
 		)
+
+	def test_install_firmware_no_steps(self, mock_expectmore):
+		"""Expect an error because there were no steps that appeared to be performed."""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_name = 'my_amazing_firmware'
+		mock_expectmore.return_value.ask.return_value = []
+		with pytest.raises(SwitchException):
+			test_switch.install_firmware(image = firmware_name)
+
+	def test_install_firmware_not_enough_steps(self, mock_expectmore):
+		"""Expect an error because there were not enough steps that appeared to be performed."""
+		test_switch = SwitchMellanoxM7800('fakeip')
+		firmware_name = 'my_amazing_firmware'
+		mock_expectmore.return_value.ask.return_value = ['Step 1 of 4: Verify Image', '100.0%', '100.0%', '100.0%',]
+		with pytest.raises(SwitchException):
+			test_switch.install_firmware(image = firmware_name)
 
 	def test_image_delete(self, mock_expectmore):
 		"""Expect this to try to delete the user requested firmware."""
@@ -167,3 +184,18 @@ class TestSwitchMellanoxM7800:
 		test_switch = SwitchMellanoxM7800('fakeip')
 		expected = sorted(['%foobar%', '%errors!'])
 		assert(sorted(test_switch._get_errors(command_response)) == expected)
+
+	def test__get_expected_errors(self, mock_expectmore):
+		"""Confirm that strings starting with '%' are treated as errors."""
+		command_response = ['foobar%%%%%%', 'f%o%b%a%r%', '%foobar%', '%errors!']
+		test_switch = SwitchMellanoxM7800('fakeip')
+		expected = sorted(['%foobar%', '%errors!'])
+		assert(sorted(test_switch._get_errors(command_response)) == expected)
+
+	def test__get_expected_errors_no_error_pattern_found(self, mock_expectmore):
+		"""Confirm that a string is returned when no error patterns are found"""
+		command_response = ['foobar%%%%%%', 'f%o%b%a%r%', 'foobar%', 'errors!']
+		test_switch = SwitchMellanoxM7800('fakeip')
+		errors = test_switch._get_expected_errors(command_response)
+		assert(isinstance(errors, str))
+		assert(errors)

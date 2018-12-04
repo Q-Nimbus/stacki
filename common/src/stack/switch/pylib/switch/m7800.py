@@ -325,10 +325,36 @@ class SwitchMellanoxM7800(Switch):
 
 
 	def install_firmware(self, image):
-		self.proc.ask(f'image install {image}', timeout=1800)
+		"""Commands the switch to install the firmware image with the provided name.
 
+		The image must be previously loaded onto the switch with image_fetch().
+		If the install appears to fail, a SwitchException is raised.
+		"""
+		steps_regex = r'Step \d of (?P<max_steps>\d)'
+		results = self.proc.ask(f'image install {image}', timeout=1800)
+		# try to get the number of steps expected to be performed
+		try:
+			num_steps = next(
+				(result for result in results if re.match(steps_regex, result, flags = re.IGNORECASE) is not None)
+			)
+		except StopIteration:
+			errors = self._get_expected_errors(results)
+			raise SwitchException(f'No firmware install steps appear to have been performed: {errors}')
+		# expect a number of success markers equal to the number of steps
+		num_steps = int(re.match(steps_regex, num_steps, flags = re.IGNORECASE).group('max_steps'))
+		completed_steps = len([result for result in results if '100.0%' in result])
+		if completed_steps != num_steps:
+			errors = self._get_expected_errors(results)
+			raise SwitchException(
+				f'Only {completed_steps} of {num_steps} firmware install steps appear to have completed successfully: {errors}'
+			)
 
 	def image_delete(self, image):
+		"""Commands the switch to delete the firmware image with the provided name.
+
+		The image must have been previously loaded onto the switch with image_fetch().
+		If the deletion appears to fail, a SwitchException is raised.
+		"""
 		results = self.proc.ask(f'image delete {image}')
 		errors = self._get_errors(results)
 		if any(errors):
@@ -336,6 +362,11 @@ class SwitchMellanoxM7800(Switch):
 
 
 	def image_fetch(self, url):
+		"""Commands the switch to fetch a firmware image from the provided URL.
+
+		The URL must begin with one of the supported protocols or a SwitchException is raised.
+		If the transfer appears to fail, a SwitchException is raised.
+		"""
 		# validate the fetch url protocol is one we support
 		if not any((url.startswith(protocol) for protocol in self.SUPPORTED_IMAGE_FETCH_PROTOCOLS)):
 			raise SwitchException(f'Image fetch URL must be one of the following supported protocols {self.SUPPORTED_IMAGE_FETCH_PROTOCOLS}')
@@ -343,8 +374,7 @@ class SwitchMellanoxM7800(Switch):
 		results = self.proc.ask(f'image fetch {url}', timeout=900)
 		# check for success indicators and raise an error if not found.
 		if not any(('100.0%' in result for result in results)):
-			errors = self._get_errors(results)
-			errors = errors if errors else 'unknown error'
+			errors = self._get_expected_errors(results)
 			raise SwitchException(f'Image fetch failed with error {errors}')
 
 	def show_images(self):
@@ -399,6 +429,15 @@ class SwitchMellanoxM7800(Switch):
 
 	def _get_errors(self, command_response):
 		"""Looks for lines that start with a '%' character and returns a list of them.
+
 		Error messages appear to start with a % character.
 		"""
 		return [error_string for error_string in command_response if error_string.startswith('%')]
+
+	def _get_expected_errors(self, command_response):
+		"""Looks for errors in the command_response and returns a list of errors found.
+
+		However, if no errors are found 'unknown error' is returned instead.
+		"""
+		errors = self._get_errors(command_response)
+		return errors if errors else 'unknown error'
